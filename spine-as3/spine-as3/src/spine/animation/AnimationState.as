@@ -89,16 +89,14 @@ public class AnimationState {
 					next.delay = 0;
 					next.trackTime = nextTime + delta * next.timeScale;
 					current.trackTime += currentDelta;
-					setCurrent(i, next);
+					setCurrent(i, next, true);
 					while (next.mixingFrom != null) {
 						next.mixTime += currentDelta;
 						next = next.mixingFrom;
 					}
 					continue;
-				}
-				updateMixingFrom(current, delta, true);
+				}				
 			} else {
-				updateMixingFrom(current, delta, true);
 				// Clear the track when there is no next entry, the track end time is reached, and there is no mixingFrom.
 				if (current.trackLast >= current.trackEnd && current.mixingFrom == null) {
 					tracks[i] = null;
@@ -107,6 +105,7 @@ public class AnimationState {
 					continue;
 				}
 			}
+			updateMixingFrom(current, delta);
 
 			current.trackTime += currentDelta;
 		}
@@ -114,27 +113,22 @@ public class AnimationState {
 		queue.drain();
 	}
 	
-	private function updateMixingFrom (entry:TrackEntry, delta:Number, canEnd:Boolean):void {
+	private function updateMixingFrom (entry:TrackEntry, delta:Number):void {
 		var from:TrackEntry = entry.mixingFrom;
 		if (from == null) return;
+		
+		updateMixingFrom(from, delta);
 
-		if (canEnd && entry.mixTime >= entry.mixDuration && entry.mixTime > 0) {
+		if (entry.mixTime >= entry.mixDuration && from.mixingFrom == null && entry.mixTime > 0) {
+			entry.mixingFrom = null;
 			queue.end(from);
-			var newFrom:TrackEntry = from.mixingFrom;
-			entry.mixingFrom = newFrom;
-			if (newFrom == null) return;
-			entry.mixTime = from.mixTime;
-			entry.mixDuration = from.mixDuration;
-			from = newFrom;
+			return;
 		}
 
 		from.animationLast = from.nextAnimationLast;
-		from.trackLast = from.nextTrackLast;
-		var mixingFromDelta:Number = delta * from.timeScale;
-		from.trackTime += mixingFromDelta;
-		entry.mixTime += mixingFromDelta;
-
-		updateMixingFrom(from, delta, canEnd && from.alpha == 1);
+		from.trackLast = from.nextTrackLast;		
+		from.trackTime += delta * from.timeScale;
+		entry.mixTime += delta * entry.timeScale;		
 	}
 	
 	public function apply (skeleton:Skeleton):void {
@@ -149,7 +143,10 @@ public class AnimationState {
 
 			// Apply mixing from entries first.
 			var mix:Number = current.alpha;
-			if (current.mixingFrom != null) mix *= applyMixingFrom(current, skeleton);
+			if (current.mixingFrom != null) 
+				mix *= applyMixingFrom(current, skeleton);
+			else if (current.trackTime >= current.trackEnd)
+				mix = 0;
 
 			// Apply current entry.
 			var animationLast:Number = current.animationLast, animationTime:Number = current.getAnimationTime();
@@ -175,6 +172,7 @@ public class AnimationState {
 				}
 			}
 			queueEvents(current, animationTime);
+			events.length = 0;
 			current.nextAnimationLast = animationTime;
 			current.nextTrackLast = current.trackTime;
 		}
@@ -220,7 +218,8 @@ public class AnimationState {
 			}
 		}
 
-		queueEvents(from, animationTime);
+		if (entry.mixDuration > 0) queueEvents(from, animationTime);
+		this.events.length = 0;
 		from.nextAnimationLast = animationTime;
 		from.nextTrackLast = from.trackTime;
 
@@ -229,6 +228,9 @@ public class AnimationState {
 	
 	private function applyRotateTimeline (timeline:Timeline, skeleton:Skeleton, time:Number, alpha:Number, setupPose:Boolean,
 		timelinesRotation:Vector.<Number>, i:int, firstFrame:Boolean):void {
+			
+		if (firstFrame) timelinesRotation[i] = 0;
+			
 		if (alpha == 1) {
 			timeline.apply(skeleton, 0, time, null, 1, setupPose, false);
 			return;
@@ -263,11 +265,7 @@ public class AnimationState {
 		var r1:Number = setupPose ? bone.data.rotation : bone.rotation;
 		var total:Number, diff:Number = r2 - r1;
 		if (diff == 0) {
-			if (firstFrame) {
-				timelinesRotation[i] = 0;
-				total = 0;
-			} else
-				total = timelinesRotation[i];
+			total = timelinesRotation[i];
 		} else {
 			diff -= (16384 - int((16384.499999999996 - diff / 360))) * 360;
 			var lastTotal:Number, lastDiff:Number;
@@ -321,16 +319,16 @@ public class AnimationState {
 			event = events[i];
 			if (event.time < animationStart) continue; // Discard events outside animation start/end.
 			queue.event(entry, events[i]);
-		}
-		events.length = 0;
+		}		
 	}
 	
 	public function clearTracks ():void {
+		var oldTrainDisabled:Boolean = queue.drainDisabled;
 		queue.drainDisabled = true;
 		for (var i:int = 0, n:int = tracks.length; i < n; i++)
 			clearTrack(i);
 		tracks.length = 0;
-		queue.drainDisabled = false;
+		queue.drainDisabled = oldTrainDisabled;
 		queue.drain();
 	}
 	
@@ -358,19 +356,19 @@ public class AnimationState {
 	}
 	
 	
-	private function setCurrent (index:int, current:TrackEntry):void {
+	private function setCurrent (index:int, current:TrackEntry, interrupt:Boolean):void {
 		var from:TrackEntry = expandToIndex(index);
 		tracks[index] = current;
 
 		if (from != null) {
-			queue.interrupt(from);
+			if (interrupt) queue.interrupt(from);
 			current.mixingFrom = from;
 			current.mixTime = 0;
 
 			from.timelinesRotation.length = 0;
 
 			// If not completely mixed in, set mixAlpha so mixing out happens from current mix to zero.
-			if (from.mixingFrom != null) current.mixAlpha *= Math.min(from.mixTime / from.mixDuration, 1);
+			if (from.mixingFrom != null && from.mixDuration > 0) current.mixAlpha *= Math.min(from.mixTime / from.mixDuration, 1);
 		}
 
 		queue.start(current);
@@ -384,20 +382,22 @@ public class AnimationState {
 	
 	public function setAnimation (trackIndex:int, animation:Animation, loop:Boolean):TrackEntry {
 		if (animation == null) throw new ArgumentError("animation cannot be null.");
+		var interrupt:Boolean = true;
 		var current:TrackEntry = expandToIndex(trackIndex);
 		if (current != null) {
 			if (current.nextTrackLast == -1) {
 				// Don't mix from an entry that was never applied.
-				tracks[trackIndex] = null;
+				tracks[trackIndex] = current.mixingFrom;
 				queue.interrupt(current);
 				queue.end(current);
 				disposeNext(current);
-				current = null;
+				current = current.mixingFrom;
+				interrupt = false;
 			} else
 				disposeNext(current);
 		}
 		var entry:TrackEntry = trackEntry(trackIndex, animation, loop, current);
-		setCurrent(trackIndex, entry);
+		setCurrent(trackIndex, entry, interrupt);
 		queue.drain();
 		return entry;
 	}
@@ -420,7 +420,7 @@ public class AnimationState {
 		var entry:TrackEntry = trackEntry(trackIndex, animation, loop, last);
 
 		if (last == null) {
-			setCurrent(trackIndex, entry);
+			setCurrent(trackIndex, entry, true);
 			queue.drain();
 		} else {
 			last.next = entry;
@@ -453,12 +453,13 @@ public class AnimationState {
 	}
 	
 	public function setEmptyAnimations (mixDuration:Number):void {
+		var oldDrainDisabled:Boolean = queue.drainDisabled;
 		queue.drainDisabled = true;
 		for (var i:int = 0, n:int = tracks.length; i < n; i++) {
 			var current:TrackEntry = tracks[i];
 			if (current != null) setEmptyAnimation(current.trackIndex, mixDuration);
 		}
-		queue.drainDisabled = false;
+		queue.drainDisabled = oldDrainDisabled;
 		queue.drain();
 	}
 	
@@ -487,7 +488,7 @@ public class AnimationState {
 		entry.trackTime = 0;
 		entry.trackLast = -1;
 		entry.nextTrackLast = -1;
-		entry.trackEnd = loop ? int.MAX_VALUE : entry.animationEnd;
+		entry.trackEnd = int.MAX_VALUE;
 		entry.timeScale = 1;
 
 		entry.alpha = 1;

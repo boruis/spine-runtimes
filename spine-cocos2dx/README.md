@@ -14,8 +14,6 @@ spine-cocos2dx works with data exported from Spine 3.5.xx.
 
 spine-cocos2dx supports all Spine features.
 
-spine-cocos2dx does not yet support loading the binary format.
-
 ## Setup
 
 The setup for cocos2d-x differs from most other Spine Runtimes because the cocos2d-x distribution includes a copy of the Spine Runtime files. This is not ideal because these files may be old and fail to work with the latest Spine editor. Also it means if cocos2d-x is updated, you may get newer Spine Runtime files which can break your application if you are not using the latest Spine editor. For these reasons, we have requested cocos2d-x to cease distributing the Spine Runtime files, but they  continue to do so. The following instructions allow you to use the official Spine cocos2d-x runtime with your cocos2d-x project.
@@ -24,8 +22,8 @@ The setup for cocos2d-x differs from most other Spine Runtimes because the cocos
 2. Delete the folder `cocos2d/cocos/editor-support/spine`. This will remove the outdated Spine cocos2d-x runtime shipped by cocos2d-x.
 3. Open your project in your IDE of choice, then open the cocos2d_libs sub project and delete the `editor-support/spine` group. This will remove the outdated Spine cocos2d-x runtime shipped by cocos2d-x from your build.
 3. Download the Spine Runtimes source using git (`git clone https://github.com/esotericsoftware/spine-runtimes`) or download it [as a zip](https://github.com/EsotericSoftware/spine-runtimes/archive/master.zip)
-4. Add the sources from `spine-c/src/spine` and `spine-cocos2dx/src/spine` to your project
-4. Add the folders `spine-c/include` and `spine-cocos2dx/src` to your header search path. Note that includes are specified as `#inclue <spine/file.h>`, so the `spine` directory cannot be omitted when copying the source files.
+4. Add the sources from `spine-c/spine-c/src/spine` and `spine-cocos2dx/src/spine` to your project
+4. Add the folders `spine-c/spine-c/include` and `spine-cocos2dx/src` to your header search path. Note that includes are specified as `#inclue <spine/file.h>`, so the `spine` directory cannot be omitted when copying the source files.
 
 ## Example
 The Spine cocos2d-x example works on Windows and Mac OS X.

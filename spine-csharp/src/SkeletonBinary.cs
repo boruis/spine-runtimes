@@ -93,14 +93,13 @@ namespace Spine {
 		#if WINDOWS_PHONE
 			using (var input = new BufferedStream(Microsoft.Xna.Framework.TitleContainer.OpenStream(path))) {
 		#else
-			using (var input = new BufferedStream(new FileStream(path, FileMode.Open))) {
-		#endif // WINDOWS_PHONE
+			using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+		#endif
 				SkeletonData skeletonData = ReadSkeletonData(input);
 				skeletonData.name = Path.GetFileNameWithoutExtension(path);
 				return skeletonData;
 			}
 		}
-
 		#endif // WINDOWS_STOREAPP
 
 		public static readonly TransformMode[] TransformModeValues = {
@@ -110,6 +109,30 @@ namespace Spine {
 			TransformMode.NoScale,
 			TransformMode.NoScaleOrReflection
 		};
+
+		/// <summary>Returns the version string of binary skeleton data.</summary>
+		public static string GetVersionString (Stream input) {
+			if (input == null) throw new ArgumentNullException("input");
+
+			try {
+				// Hash.
+				int byteCount = ReadVarint(input, true);
+				if (byteCount > 1) input.Position += byteCount - 1;
+
+				// Version.
+				byteCount = ReadVarint(input, true);
+				if (byteCount > 1) {
+					byteCount--;
+					var buffer = new byte[byteCount];
+					ReadFully(input, buffer, 0, byteCount);
+					return System.Text.Encoding.UTF8.GetString(buffer, 0, byteCount);
+				}
+
+				throw new ArgumentException("Stream does not contain a valid binary Skeleton Data.", "input");
+			} catch (Exception e) {
+				throw new ArgumentException("Stream does not contain a valid binary Skeleton Data.\n" + e, "input");
+			}
+		}
 
 		public SkeletonData ReadSkeletonData (Stream input) {
 			if (input == null) throw new ArgumentNullException("input");

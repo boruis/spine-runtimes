@@ -74,16 +74,14 @@ module spine {
 						next.delay = 0;
 						next.trackTime = nextTime + delta * next.timeScale;
 						current.trackTime += currentDelta;
-						this.setCurrent(i, next);
+						this.setCurrent(i, next, true);
 						while (next.mixingFrom != null) {
 							next.mixTime += currentDelta;
 							next = next.mixingFrom;
 						}
 						continue;
 					}
-					this.updateMixingFrom(current, delta, true);
 				} else {
-					this.updateMixingFrom(current, delta, true);
 					// Clear the track when there is no next entry, the track end time is reached, and there is no mixingFrom.
 					if (current.trackLast >= current.trackEnd && current.mixingFrom == null) {
 						tracks[i] = null;
@@ -92,6 +90,7 @@ module spine {
 						continue;
 					}
 				}
+				this.updateMixingFrom(current, delta);
 
 				current.trackTime += currentDelta;
 			}
@@ -99,27 +98,22 @@ module spine {
 			this.queue.drain();
 		}
 
-		updateMixingFrom (entry: TrackEntry, delta: number, canEnd: boolean) {
+		updateMixingFrom (entry: TrackEntry, delta: number) {
 			let from = entry.mixingFrom;
 			if (from == null) return;
 
-			if (canEnd && entry.mixTime >= entry.mixDuration && entry.mixTime > 0) {
+			this.updateMixingFrom(from, delta);
+
+			if (entry.mixTime >= entry.mixDuration && from.mixingFrom != null && entry.mixTime > 0) {
+				entry.mixingFrom = null;
 				this.queue.end(from);
-				let newFrom = from.mixingFrom;
-				entry.mixingFrom = newFrom;
-				if (newFrom == null) return;
-				entry.mixTime = from.mixTime;
-				entry.mixDuration = from.mixDuration;
-				from = newFrom;
+				return;
 			}
 
 			from.animationLast = from.nextAnimationLast;
 			from.trackLast = from.nextTrackLast;
-			let mixingFromDelta = delta * from.timeScale;
-			from.trackTime += mixingFromDelta;
-			entry.mixTime += mixingFromDelta;
-
-			this.updateMixingFrom(from, delta, canEnd && from.alpha == 1);
+			from.trackTime += delta * from.timeScale;
+			entry.mixTime += delta * from.timeScale;
 		}
 
 		apply (skeleton: Skeleton) {
@@ -135,7 +129,10 @@ module spine {
 
 				// Apply mixing from entries first.
 				let mix = current.alpha;
-				if (current.mixingFrom != null) mix *= this.applyMixingFrom(current, skeleton);
+				if (current.mixingFrom != null)
+					mix *= this.applyMixingFrom(current, skeleton);
+				else if (current.trackTime >= current.trackEnd)
+					mix = 0;
 
 				// Apply current entry.
 				let animationLast = current.animationLast, animationTime = current.getAnimationTime();
@@ -160,6 +157,7 @@ module spine {
 					}
 				}
 				this.queueEvents(current, animationTime);
+				events.length = 0;
 				current.nextAnimationLast = animationTime;
 				current.nextTrackLast = current.trackTime;
 			}
@@ -205,7 +203,8 @@ module spine {
 				}
 			}
 
-			this.queueEvents(from, animationTime);
+			if (entry.mixDuration > 0) this.queueEvents(from, animationTime);
+			this.events.length = 0;
 			from.nextAnimationLast = animationTime;
 			from.nextTrackLast = from.trackTime;
 
@@ -214,6 +213,9 @@ module spine {
 
 		applyRotateTimeline (timeline: Timeline, skeleton: Skeleton, time: number, alpha: number, setupPose: boolean,
 			timelinesRotation: Array<number>, i: number, firstFrame: boolean) {
+
+			if (firstFrame) timelinesRotation[i] = 0;
+
 			if (alpha == 1) {
 				timeline.apply(skeleton, 0, time, null, 1, setupPose, false);
 				return;
@@ -248,11 +250,7 @@ module spine {
 			let r1 = setupPose ? bone.data.rotation : bone.rotation;
 			let total = 0, diff = r2 - r1;
 			if (diff == 0) {
-				if (firstFrame) {
-					timelinesRotation[i] = 0;
-					total = 0;
-				} else
-					total = timelinesRotation[i];
+				total = timelinesRotation[i];
 			} else {
 				diff -= (16384 - ((16384.499999999996 - diff / 360) | 0)) * 360;
 				let lastTotal = 0, lastDiff = 0;
@@ -306,15 +304,15 @@ module spine {
 				if (event.time < animationStart) continue; // Discard events outside animation start/end.
 				this.queue.event(entry, events[i]);
 			}
-			this.events.length = 0;
 		}
 
 		clearTracks () {
+			let oldDrainDisabled = this.queue.drainDisabled;
 			this.queue.drainDisabled = true;
 			for (let i = 0, n = this.tracks.length; i < n; i++)
 				this.clearTrack(i);
 			this.tracks.length = 0;
-			this.queue.drainDisabled = false;
+			this.queue.drainDisabled = oldDrainDisabled;
 			this.queue.drain();
 		}
 
@@ -341,17 +339,19 @@ module spine {
 			this.queue.drain();
 		}
 
-		setCurrent (index: number, current: TrackEntry) {
+		setCurrent (index: number, current: TrackEntry, interrupt: boolean) {
 			let from = this.expandToIndex(index);
 			this.tracks[index] = current;
 
 			if (from != null) {
-				this.queue.interrupt(from);
+				if (interrupt) this.queue.interrupt(from);
 				current.mixingFrom = from;
 				current.mixTime = 0;
 
+				from.timelinesRotation.length = 0;
+
 				// If not completely mixed in, set mixAlpha so mixing out happens from current mix to zero.
-				if (from.mixingFrom != null) current.mixAlpha *= Math.min(from.mixTime / from.mixDuration, 1);
+				if (from.mixingFrom != null && from.mixDuration > 0) current.mixAlpha *= Math.min(from.mixTime / from.mixDuration, 1);
 			}
 
 			this.queue.start(current);
@@ -365,20 +365,22 @@ module spine {
 
 		setAnimationWith (trackIndex: number, animation: Animation, loop: boolean) {
 			if (animation == null) throw new Error("animation cannot be null.");
+			let interrupt = true;
 			let current = this.expandToIndex(trackIndex);
 			if (current != null) {
 				if (current.nextTrackLast == -1) {
 					// Don't mix from an entry that was never applied.
-					this.tracks[trackIndex] = null;
+					this.tracks[trackIndex] = current.mixingFrom;
 					this.queue.interrupt(current);
 					this.queue.end(current);
 					this.disposeNext(current);
-					current = null;
+					current = current.mixingFrom;
+					interrupt = false;
 				} else
 					this.disposeNext(current);
 			}
 			let entry = this.trackEntry(trackIndex, animation, loop, current);
-			this.setCurrent(trackIndex, entry);
+			this.setCurrent(trackIndex, entry, interrupt);
 			this.queue.drain();
 			return entry;
 		}
@@ -401,7 +403,7 @@ module spine {
 			let entry = this.trackEntry(trackIndex, animation, loop, last);
 
 			if (last == null) {
-				this.setCurrent(trackIndex, entry);
+				this.setCurrent(trackIndex, entry, true);
 				this.queue.drain();
 			} else {
 				last.next = entry;
@@ -434,12 +436,13 @@ module spine {
 		}
 
 		setEmptyAnimations (mixDuration: number) {
+			let oldDrainDisabled = this.queue.drainDisabled;
 			this.queue.drainDisabled = true;
 			for (let i = 0, n = this.tracks.length; i < n; i++) {
 				let current = this.tracks[i];
 				if (current != null) this.setEmptyAnimation(current.trackIndex, mixDuration);
 			}
-			this.queue.drainDisabled = false;
+			this.queue.drainDisabled = oldDrainDisabled;
 			this.queue.drain();
 		}
 
@@ -469,7 +472,7 @@ module spine {
 			entry.trackTime = 0;
 			entry.trackLast = -1;
 			entry.nextTrackLast = -1;
-			entry.trackEnd = loop ? Number.MAX_VALUE : entry.animationEnd;
+			entry.trackEnd = Number.MAX_VALUE;
 			entry.timeScale = 1;
 
 			entry.alpha = 1;
